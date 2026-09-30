@@ -1,0 +1,129 @@
+import random
+from collections import defaultdict
+
+# --- 1. Dataset Preparation ---
+training_sentences = [
+    "the cat sat on the mat",
+    "the cat sat on the rug",
+    "the dog sat on the mat",
+    "the dog ran to the park",
+    "the cat ran to the park",
+    "the dog sat on the rug"
+]
+
+def tokenize_data(sentences):
+    """Adds  and  tokens and splits into words."""
+    return [[""] + s.lower().split() + [""] for s in sentences]
+
+dataset = tokenize_data(training_sentences)
+
+# --- 2. Model Implementations ---
+
+class NgramModel:
+    def __init__(self, order):
+        self.order = order
+        self.counts = defaultdict(lambda: defaultdict(int))
+        self.probabilities = defaultdict(dict)
+
+    def train(self, data):
+        """Counts transitions and calculates conditional probabilities."""
+        # Count occurrences
+        for sentence in data:
+            for i in range(self.order, len(sentence)):
+                # Context is a tuple of the previous 'order' words
+                context = tuple(sentence[i - self.order : i])
+                next_word = sentence[i]
+                self.counts[context][next_word] += 1
+
+        # Calculate P(X_t | X_t-n)
+        for context, next_words in self.counts.items():
+            total_transitions = sum(next_words.values())
+            for next_word, count in next_words.items():
+                self.probabilities[context][next_word] = count / total_transitions
+
+    def test_normalization(self):
+        """Tests that all probability distributions sum to 1.0."""
+        print(f"\n--- Testing Normalization (Order {self.order}) ---")
+        all_valid = True
+        for context, next_words in self.probabilities.items():
+            total = sum(next_words.values())
+            if not (0.99 < total < 1.01):
+                print(f"Error: Context {context} sums to {total}")
+                all_valid = False
+        if all_valid:
+            print("Success: All context distributions sum to 1.0")
+
+    def generate(self, mode="sampling", max_length=15):
+        """Generates a sentence using the specified mode."""
+        current_context = tuple([""] * self.order)
+        generated_sentence = []
+
+        while len(generated_sentence) < max_length:
+            if current_context not in self.probabilities:
+                break # Zero-probability context reached
+
+            next_word_probs = self.probabilities[current_context]
+            
+            if mode == "greedy":
+                # Mode A: Always choose arg max P(w | w_previous)
+                next_word = max(next_word_probs, key=next_word_probs.get)
+            elif mode == "sampling":
+                # Mode B: Sample from P(w | w_previous)
+                words = list(next_word_probs.keys())
+                weights = list(next_word_probs.values())
+                next_word = random.choices(words, weights=weights, k=1)[0]
+            else:
+                raise ValueError("Mode must be 'greedy' or 'sampling'")
+
+            if next_word == "":
+                break
+                
+            generated_sentence.append(next_word)
+            
+            # Update context for the next iteration
+            current_context = tuple(list(current_context[1:]) + [next_word])
+
+        return " ".join(generated_sentence)
+
+
+# --- 3. Execution and Testing ---
+if __name__ == "__main__":
+    # --- FIRST-ORDER MODEL ---
+    model_1st = NgramModel(order=1)
+    model_1st.train(dataset)
+    
+    # CPT Display for a specific context
+    print("--- First-Order CPT for context: ('the',) ---")
+    for word, prob in model_1st.probabilities[('the',)].items():
+        print(f"P({word} | 'the') = {prob:.3f}")
+        
+    model_1st.test_normalization()
+    
+    print("\n--- Generating with 1st-Order Model (Greedy) ---")
+    for _ in range(3):
+        print(model_1st.generate(mode="greedy"))
+        
+    print("\n--- Generating with 1st-Order Model (Sampling) ---")
+    for _ in range(5):
+        print(model_1st.generate(mode="sampling"))
+
+
+    # --- SECOND-ORDER MODEL ---
+    print("\n==================================================")
+    
+    # Data needs to be padded with an extra  so the 2nd order model 
+    # can look back 2 tokens right at the beginning.
+    padded_dataset = [[""] + s for s in dataset]
+    
+    model_2nd = NgramModel(order=2)
+    model_2nd.train(padded_dataset)
+    
+    print("\n--- Second-Order CPT for context: ('cat', 'sat') ---")
+    for word, prob in model_2nd.probabilities[('cat', 'sat')].items():
+        print(f"P({word} | 'cat', 'sat') = {prob:.3f}")
+        
+    model_2nd.test_normalization()
+    
+    print("\n--- Generating with 2nd-Order Model (Sampling) ---")
+    for _ in range(5):
+        print(model_2nd.generate(mode="sampling"))
