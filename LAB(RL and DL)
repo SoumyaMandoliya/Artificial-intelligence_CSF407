@@ -1,0 +1,441 @@
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import random
+from collections import deque
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+
+# ==========================================
+# CONSTANTS & SHARED SETUP
+# ==========================================
+OBSTACLES = {(0, 2), (1, 2), (3, 2), (4, 2)} 
+GRID_SIZE = 5
+
+def plot_warehouse_grid_single(path):
+    """Draws the 5x5 warehouse grid using Matplotlib and overlays a single robot's path."""
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.set_xlim(0, 5)
+    ax.set_ylim(5, 0)
+    ax.set_xticks(range(6))
+    ax.set_yticks(range(6))
+    ax.grid(color='gray', linestyle='-', linewidth=1)
+    
+    ax.set_xticks(np.arange(0.5, 5.5), minor=True)
+    ax.set_yticks(np.arange(0.5, 5.5), minor=True)
+    ax.set_xticklabels(['0', '1', '2', '3', '4'], minor=True, fontsize=12)
+    ax.set_yticklabels(['0', '1', '2', '3', '4'], minor=True, fontsize=12)
+    
+    ax.tick_params(which='major', labelbottom=False, labelleft=False, bottom=False, left=False)
+    ax.tick_params(which='minor', top=True, bottom=False, labeltop=True, labelbottom=False, left=True, right=False, length=0)
+    
+    ax.set_xlabel("Column", fontsize=14, labelpad=10)
+    ax.xaxis.set_label_position('top')
+    ax.set_ylabel("Row", fontsize=14, labelpad=10)
+    
+    for r, c in OBSTACLES:
+        rect = patches.Rectangle((c, r), 1, 1, linewidth=1, edgecolor='gray', facecolor='gray')
+        ax.add_patch(rect)
+        
+    ax.text(0.5, 2.5, '$S$', ha='center', va='center', fontsize=18, fontweight='bold')
+    ax.text(2.5, 2.5, 'door', ha='center', va='center', fontsize=12)
+    ax.text(4.5, 2.5, '$G$', ha='center', va='center', fontsize=18, fontweight='bold')
+    
+    if path:
+        path_cols = [p[1] + 0.5 for p in path]
+        path_rows = [p[0] + 0.5 for p in path]
+        ax.plot(path_cols, path_rows, color='blue', marker='o', markersize=8, linewidth=3, alpha=0.7, label='Robot Path')
+        ax.legend(loc='upper right', bbox_to_anchor=(1.35, 1))
+
+    plt.title("Single Robot Navigation Map", pad=30, fontsize=16)
+    plt.tight_layout()
+    plt.show()
+
+def plot_warehouse_grid_dual(path_A, path_B):
+    """Draws the 5x5 warehouse grid using Matplotlib and overlays paths for two robots."""
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.set_xlim(0, 5)
+    ax.set_ylim(5, 0)
+    ax.set_xticks(range(6))
+    ax.set_yticks(range(6))
+    ax.grid(color='gray', linestyle='-', linewidth=1)
+    
+    ax.set_xticks(np.arange(0.5, 5.5), minor=True)
+    ax.set_yticks(np.arange(0.5, 5.5), minor=True)
+    ax.set_xticklabels(['0', '1', '2', '3', '4'], minor=True, fontsize=12)
+    ax.set_yticklabels(['0', '1', '2', '3', '4'], minor=True, fontsize=12)
+    
+    ax.tick_params(which='major', labelbottom=False, labelleft=False, bottom=False, left=False)
+    ax.tick_params(which='minor', top=True, bottom=False, labeltop=True, labelbottom=False, left=True, right=False, length=0)
+    
+    ax.set_xlabel("Column", fontsize=14, labelpad=10)
+    ax.xaxis.set_label_position('top')
+    ax.set_ylabel("Row", fontsize=14, labelpad=10)
+    
+    for r, c in OBSTACLES:
+        rect = patches.Rectangle((c, r), 1, 1, linewidth=1, edgecolor='gray', facecolor='gray')
+        ax.add_patch(rect)
+        
+    ax.text(0.5, 2.5, 'A/b', ha='center', va='center', fontsize=14, fontweight='bold')
+    ax.text(2.5, 2.5, 'door', ha='center', va='center', fontsize=12)
+    ax.text(4.5, 2.5, 'B/a', ha='center', va='center', fontsize=14, fontweight='bold')
+    
+    if path_A:
+        path_cols_A = [p[1] + 0.4 for p in path_A]
+        path_rows_A = [p[0] + 0.4 for p in path_A]
+        ax.plot(path_cols_A, path_rows_A, color='blue', marker='o', markersize=6, linewidth=2, alpha=0.7, label='Robot A Path')
+        
+    if path_B:
+        path_cols_B = [p[1] + 0.6 for p in path_B]
+        path_rows_B = [p[0] + 0.6 for p in path_B]
+        ax.plot(path_cols_B, path_rows_B, color='red', marker='s', markersize=6, linewidth=2, alpha=0.7, label='Robot B Path')
+        
+    ax.legend(loc='upper right', bbox_to_anchor=(1.45, 1))
+    plt.title("Dual Robot Navigation Map", pad=30, fontsize=16)
+    plt.tight_layout()
+    plt.show()
+
+def set_seed(seed=7): 
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+
+# ==========================================
+# PART 1: TABULAR Q-LEARNING (TASKS 3, 4, 5)
+# ==========================================
+class SingleRobotEnv:
+    def __init__(self):
+        self.start = (2, 0)
+        self.goal = (2, 4) 
+        self.reset()
+
+    def reset(self, pos=None):
+        self.pos = pos if pos else self.start
+        self.steps = 0
+        return self.pos
+
+    def step(self, action):
+        """Actions: 0=Up, 1=Down, 2=Left, 3=Right, 4=Wait"""
+        self.steps += 1
+        r, c = self.pos
+        
+        if action == 0: r -= 1
+        elif action == 1: r += 1
+        elif action == 2: c -= 1
+        elif action == 3: c += 1
+        
+        valid_move = True
+        if not (0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE) or (r, c) in OBSTACLES:
+            valid_move = False
+            r, c = self.pos 
+            
+        self.pos = (r, c)
+        
+        if self.pos == self.goal:
+            reward = 10.0
+            terminated = True
+        elif not valid_move and action != 4:
+            reward = -1.0
+            terminated = False
+        else:
+            reward = -0.1
+            terminated = False
+            
+        truncated = self.steps >= 40 
+        return self.pos, reward, terminated, truncated
+
+def train_tabular_q_learning():
+    set_seed(7)
+    env = SingleRobotEnv()
+    q_table = np.zeros((25, 5)) 
+    
+    alpha = 0.2
+    gamma = 0.95
+    total_episodes = 1500 
+    
+    for episode in range(total_episodes):
+        state = env.reset()
+        epsilon = max(0.05, 1.0 - (0.95 * episode / 1200)) 
+        
+        terminated, truncated = False, False
+        while not (terminated or truncated):
+            s_idx = state[0] * 5 + state[1]
+            
+            if random.random() < epsilon:
+                action = random.randint(0, 4)
+            else:
+                action = np.argmax(q_table[s_idx])
+                
+            next_state, reward, terminated, truncated = env.step(action)
+            ns_idx = next_state[0] * 5 + next_state[1]
+            
+            if terminated:
+                target = reward 
+            else:
+                target = reward + gamma * np.max(q_table[ns_idx]) 
+                
+            q_table[s_idx, action] += alpha * (target - q_table[s_idx, action])
+            state = next_state
+
+    print("\n--- Task 5: Tabular Q-Learning Greedy Trajectory ---")
+    state = env.reset()
+    path = [state]
+    while state != env.goal and len(path) < 40:
+        s_idx = state[0] * 5 + state[1]
+        action = np.argmax(q_table[s_idx])
+        state, _, _, _ = env.step(action)
+        path.append(state)
+    print(f"Path taken: {path}")
+    print(f"Steps: {len(path)-1}")
+    
+    print("Displaying Tabular Q-Learning Graph...")
+    plot_warehouse_grid_single(path)
+
+# ==========================================
+# PART 2: DQN FOR SINGLE ROBOT (TASK 6)
+# ==========================================
+class DQN(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(DQN, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, output_dim) 
+        )
+    def forward(self, x):
+        return self.net(x)
+
+def pos_to_one_hot(pos):
+    vec = np.zeros(25, dtype=np.float32)
+    vec[pos[0] * 5 + pos[1]] = 1.0 
+    return vec
+
+def train_dqn_single():
+    set_seed(7)
+    env = SingleRobotEnv()
+    
+    online_net = DQN(25, 5)
+    target_net = DQN(25, 5)
+    target_net.load_state_dict(online_net.state_dict()) 
+    optimizer = optim.Adam(online_net.parameters(), lr=0.001) 
+    
+    replay_buffer = deque(maxlen=20000) 
+    batch_size = 64
+    gamma = 0.95
+    total_steps = 12000 
+    
+    state = env.reset()
+    for step in range(1, total_steps + 1):
+        epsilon = max(0.05, 1.0 - (0.95 * step / (0.8 * total_steps))) 
+        
+        state_vec = pos_to_one_hot(state)
+        if random.random() < epsilon:
+            action = random.randint(0, 4)
+        else:
+            with torch.no_grad():
+                q_vals = online_net(torch.tensor(state_vec))
+                action = torch.argmax(q_vals).item()
+                
+        next_state, reward, terminated, truncated = env.step(action)
+        replay_buffer.append((state_vec, action, reward, pos_to_one_hot(next_state), terminated))
+        
+        if terminated or truncated:
+            state = env.reset()
+        else:
+            state = next_state
+            
+        if len(replay_buffer) >= 500 and step % 4 == 0:
+            batch = random.sample(replay_buffer, batch_size)
+            s_b = torch.tensor(np.array([x[0] for x in batch]))
+            a_b = torch.tensor([x[1] for x in batch]).unsqueeze(1)
+            r_b = torch.tensor([x[2] for x in batch], dtype=torch.float32)
+            ns_b = torch.tensor(np.array([x[3] for x in batch]))
+            done_b = torch.tensor([x[4] for x in batch], dtype=torch.float32)
+            
+            q_values = online_net(s_b).gather(1, a_b).squeeze()
+            with torch.no_grad():
+                max_next_q = target_net(ns_b).max(1)[0]
+                targets = r_b + gamma * max_next_q * (1 - done_b)
+                
+            loss = nn.MSELoss()(q_values, targets)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+        if step % 250 == 0:
+            target_net.load_state_dict(online_net.state_dict()) 
+
+    print("\n--- Task 6: DQN Single Robot Greedy Trajectory ---")
+    state = env.reset()
+    path = [state]
+    while state != env.goal and len(path) < 40:
+        q_vals = online_net(torch.tensor(pos_to_one_hot(state)))
+        action = torch.argmax(q_vals).item()
+        state, _, _, _ = env.step(action)
+        path.append(state)
+    print(f"Path taken: {path}")
+    
+    print("Displaying Single DQN Graph...")
+    plot_warehouse_grid_single(path)
+
+# ==========================================
+# PART 3: TWO-ROBOT CONTROLLER (TASK 7)
+# ==========================================
+class DualRobotEnv:
+    def __init__(self):
+        self.start_A = (2, 0)
+        self.goal_A = (2, 4) 
+        self.start_B = (2, 4)
+        self.goal_B = (2, 0) 
+        self.reset()
+
+    def reset(self):
+        self.pos_A = self.start_A
+        self.pos_B = self.start_B
+        self.steps = 0
+        return self.pos_A, self.pos_B
+
+    def _get_next_pos(self, pos, action):
+        r, c = pos
+        if action == 0: r -= 1
+        elif action == 1: r += 1
+        elif action == 2: c -= 1
+        elif action == 3: c += 1
+        if not (0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE) or (r, c) in OBSTACLES:
+            return pos, False 
+        return (r, c), True
+
+    def step(self, joint_action):
+        self.steps += 1
+        a_A, a_B = divmod(joint_action, 5) 
+        
+        at_goal_A_before = (self.pos_A == self.goal_A)
+        at_goal_B_before = (self.pos_B == self.goal_B)
+        
+        new_A, valid_A = (self.pos_A, True) if at_goal_A_before else self._get_next_pos(self.pos_A, a_A)
+        new_B, valid_B = (self.pos_B, True) if at_goal_B_before else self._get_next_pos(self.pos_B, a_B)
+        
+        same_cell = (new_A == new_B)
+        swap = (new_A == self.pos_B and new_B == self.pos_A)
+        
+        if same_cell or swap:
+            return (self.pos_A, self.pos_B), -10.0, True, False
+            
+        self.pos_A, self.pos_B = new_A, new_B
+        
+        at_goal_A_after = (self.pos_A == self.goal_A)
+        at_goal_B_after = (self.pos_B == self.goal_B)
+        
+        b = 0
+        if not valid_A and not at_goal_A_before: b += 1
+        if not valid_B and not at_goal_B_before: b += 1
+            
+        k = 0
+        if at_goal_A_after and not at_goal_A_before: k += 1
+        if at_goal_B_after and not at_goal_B_before: k += 1
+            
+        I = 1 if (at_goal_A_after and at_goal_B_after) else 0
+        reward = -0.1 - b + 5*k + 5*I 
+        
+        terminated = (I == 1)
+        truncated = self.steps >= 40 
+        
+        return (self.pos_A, self.pos_B), reward, terminated, truncated
+
+def dual_state_to_tensor(pos_A, pos_B):
+    vec_A = pos_to_one_hot(pos_A)
+    vec_B = pos_to_one_hot(pos_B)
+    return np.concatenate((vec_A, vec_B)) 
+
+def train_dqn_dual():
+    set_seed(7)
+    env = DualRobotEnv()
+    
+    online_net = DQN(50, 25) 
+    target_net = DQN(50, 25)
+    target_net.load_state_dict(online_net.state_dict())
+    optimizer = optim.Adam(online_net.parameters(), lr=0.001)
+    
+    replay_buffer = deque(maxlen=20000)
+    batch_size = 64
+    gamma = 0.95
+    total_steps = 60000 
+    
+    pos_A, pos_B = env.reset()
+    for step in range(1, total_steps + 1):
+        epsilon = max(0.05, 1.0 - (0.95 * step / (0.8 * total_steps)))
+        
+        state_vec = dual_state_to_tensor(pos_A, pos_B)
+        if random.random() < epsilon:
+            action = random.randint(0, 24)
+        else:
+            with torch.no_grad():
+                q_vals = online_net(torch.tensor(state_vec))
+                action = torch.argmax(q_vals).item()
+                
+        (next_A, next_B), reward, terminated, truncated = env.step(action)
+        replay_buffer.append((state_vec, action, reward, dual_state_to_tensor(next_A, next_B), terminated))
+        
+        if terminated or truncated:
+            pos_A, pos_B = env.reset()
+        else:
+            pos_A, pos_B = next_A, next_B
+            
+        if len(replay_buffer) >= 500 and step % 4 == 0:
+            batch = random.sample(replay_buffer, batch_size)
+            s_b = torch.tensor(np.array([x[0] for x in batch]))
+            a_b = torch.tensor([x[1] for x in batch]).unsqueeze(1)
+            r_b = torch.tensor([x[2] for x in batch], dtype=torch.float32)
+            ns_b = torch.tensor(np.array([x[3] for x in batch]))
+            done_b = torch.tensor([x[4] for x in batch], dtype=torch.float32)
+            
+            q_values = online_net(s_b).gather(1, a_b).squeeze()
+            with torch.no_grad():
+                max_next_q = target_net(ns_b).max(1)[0]
+                targets = r_b + gamma * max_next_q * (1 - done_b)
+                
+            loss = nn.MSELoss()(q_values, targets)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+        if step % 250 == 0:
+            target_net.load_state_dict(online_net.state_dict())
+
+    print("\n--- Task 7: Dual Robot Greedy Trajectory ---")
+    pos_A, pos_B = env.reset()
+    
+    path_A = [pos_A]
+    path_B = [pos_B]
+    
+    steps = 0
+    print(f"Init: A at {pos_A}, B at {pos_B}")
+    while not (pos_A == env.goal_A and pos_B == env.goal_B) and steps < 40:
+        q_vals = online_net(torch.tensor(dual_state_to_tensor(pos_A, pos_B)))
+        action = torch.argmax(q_vals).item()
+        
+        a_A, a_B = divmod(action, 5)
+        actions_map = {0:"Up", 1:"Down", 2:"Left", 3:"Right", 4:"Wait"}
+        print(f"Step {steps+1}: A moves {actions_map[a_A]}, B moves {actions_map[a_B]}")
+        
+        (pos_A, pos_B), reward, terminated, truncated = env.step(action)
+        print(f"  -> State: A at {pos_A}, B at {pos_B}")
+        
+        path_A.append(pos_A)
+        path_B.append(pos_B)
+        
+        steps += 1
+        if terminated: 
+            print("  -> Episode Terminated (Collision or Success)")
+            break
+            
+    print("Displaying Dual DQN Graph...")
+    plot_warehouse_grid_dual(path_A, path_B)
+
+if __name__ == "__main__":
+    train_tabular_q_learning()
+    train_dqn_single()
+    train_dqn_dual()

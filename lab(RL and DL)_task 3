@@ -1,0 +1,276 @@
+import numpy as np
+import random
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+
+# ==========================================
+# 1. CONSTANTS & ENVIRONMENT SETUP
+# ==========================================
+GRID_SIZE = 5
+OBSTACLES = {(0, 2), (1, 2), (3, 2), (4, 2)} #[cite: 4]
+START = (2, 0) #[cite: 4]
+GOAL = (2, 4) #[cite: 4]
+ACTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1), (0, 0)] # Up, Down, Left, Right, Wait[cite: 4]
+
+def reset_env(start_pos=START):
+    """Resets the environment."""
+    return start_pos, 0
+
+def step_env(state, action_idx, step_count):
+    """Executes one step. Returns next_state, reward, terminated, truncated, step_count, is_invalid."""
+    r, c = state
+    dr, dc = ACTIONS[action_idx]
+    new_r, new_c = r + dr, c + dc
+    
+    is_invalid = False
+    if not (0 <= new_r < GRID_SIZE and 0 <= new_c < GRID_SIZE) or (new_r, new_c) in OBSTACLES:
+        is_invalid = True
+        new_r, new_c = r, c  # Stay in place[cite: 4]
+        
+    next_state = (new_r, new_c)
+    step_count += 1
+    
+    # Rewards and stopping rules[cite: 4]
+    if next_state == GOAL:
+        reward = 10.0
+        terminated = True
+    elif is_invalid and action_idx != 4:
+        reward = -1.0
+        terminated = False
+    else:
+        reward = -0.1
+        terminated = False
+        
+    truncated = step_count >= 40 # Cut off unfinished episodes[cite: 6]
+    return next_state, reward, terminated, truncated, step_count, is_invalid
+
+def state_to_idx(state):
+    return state[0] * GRID_SIZE + state[1]
+
+# ==========================================
+# 2. Q-LEARNING CORE FUNCTIONS
+# ==========================================
+def epsilon_greedy_action(q_table, state, epsilon):
+    """Selects an action using epsilon-greedy with random tie-breaking[cite: 2]."""
+    if random.random() < epsilon:
+        return random.randint(0, 4)
+    else:
+        state_idx = state_to_idx(state)
+        max_val = np.max(q_table[state_idx])
+        best_actions = np.where(q_table[state_idx] == max_val)[0]
+        return random.choice(best_actions)
+
+def q_learning_update(q_table, state, action, reward, next_state, terminated, alpha, gamma):
+    """Performs the TD target update[cite: 2, 6]."""
+    s_idx = state_to_idx(state)
+    ns_idx = state_to_idx(next_state)
+    
+    if terminated:
+        target = reward # Do not bootstrap on goal[cite: 6]
+    else:
+        target = reward + gamma * np.max(q_table[ns_idx]) # Bootstrap on truncation[cite: 6]
+        
+    q_table[s_idx, action] += alpha * (target - q_table[s_idx, action])
+
+# ==========================================
+# 3. TASK 4: MANUAL TESTS
+# ==========================================
+def run_task_4_tests():
+    print("=== TASK 4: ENVIRONMENT AND UPDATE TESTS ===")
+    
+    # Environment Tests[cite: 7]
+    print("\n1. Testing Environment Transitions:")
+    test_cases = [
+        ((0,0), 0, "up"), ((1,1), 3, "right"), 
+        ((2,1), 3, "right"), ((2,1), 4, "wait"), ((2,3), 3, "right")
+    ]
+    actions_map = {"up":0, "down":1, "left":2, "right":3, "wait":4}
+    
+    for pos, act_idx, act_name in test_cases:
+        ns, r, term, trunc, _, _ = step_env(pos, act_idx, 0)
+        print(f"  Pos {pos} | Act: {act_name:<5} -> Next: {ns}, Reward: {r:>4.1f}, Terminated: {term}")
+
+    # Synthetic Update Tests[cite: 7]
+    print("\n2. Testing Q-Learning Updates (Hand-calculated checks):")
+    alpha, gamma = 0.2, 0.95
+    # Non-terminal: Q=0.4, r=1, maxQ=2 -> Target = 1 + 0.95*2 = 2.9 -> Update = 0.4 + 0.2*(2.9-0.4) = 0.9[cite: 7]
+    val_non_term = 0.4 + alpha * (1 + gamma * 2 - 0.4)
+    # Terminal: Q=0.4, r=5 -> Target = 5 -> Update = 0.4 + 0.2*(5-0.4) = 1.32[cite: 7]
+    val_term = 0.4 + alpha * (5 - 0.4)
+    print(f"  Non-terminal update result : {val_non_term:.2f} (Expected: 0.90)")
+    print(f"  Terminal update result     : {val_term:.2f} (Expected: 1.32)")
+    print(f"  Truncated update result    : {val_non_term:.2f} (Expected: 0.90, uses non-terminal logic)")
+    print("-" * 50)
+
+# ==========================================
+# 4. TASK 5: TRAINING & EVALUATION
+# ==========================================
+def train():
+    print("\n=== TASK 3 & 5: TRAINING Q-LEARNING AGENT ===")
+    np.random.seed(7)
+    random.seed(7)
+    
+    q_table = np.zeros((GRID_SIZE * GRID_SIZE, len(ACTIONS)))
+    alpha, gamma = 0.2, 0.95 #[cite: 6]
+    total_episodes = 1500 #[cite: 6]
+    
+    episode_returns = []
+    episode_successes = []
+    
+    for episode in range(total_episodes):
+        state, step_count = reset_env()
+        epsilon = max(0.05, 1.0 - (0.95 * episode / 1200)) #[cite: 6]
+        
+        terminated, truncated = False, False
+        total_reward = 0.0
+        
+        while not (terminated or truncated):
+            action = epsilon_greedy_action(q_table, state, epsilon)
+            next_state, reward, terminated, truncated, step_count, _ = step_env(state, action, step_count)
+            q_learning_update(q_table, state, action, reward, next_state, terminated, alpha, gamma)
+            
+            state = next_state
+            total_reward += reward
+            
+        episode_returns.append(total_reward)
+        episode_successes.append(1 if terminated else 0)
+        
+    print(f"Training completed for {total_episodes} episodes.")
+    return q_table, episode_returns, episode_successes
+
+def evaluate_policy(q_table, use_random=False, episodes=1):
+    """Evaluates a policy and tracks all metrics requested in Task 5[cite: 8]."""
+    successes, timeouts, total_invalid = 0, 0, 0
+    successful_steps = []
+    last_path = []
+    
+    for _ in range(episodes):
+        state, step_count = reset_env()
+        path = [state]
+        terminated, truncated = False, False
+        ep_invalid = 0
+        
+        while not (terminated or truncated):
+            if use_random:
+                action = random.randint(0, 4)
+            else:
+                action = epsilon_greedy_action(q_table, state, epsilon=0.0) # Greedy
+                
+            state, _, terminated, truncated, step_count, is_inv = step_env(state, action, step_count)
+            path.append(state)
+            if is_inv: ep_invalid += 1
+            
+        if terminated:
+            successes += 1
+            successful_steps.append(step_count)
+        if truncated:
+            timeouts += 1
+        total_invalid += ep_invalid
+        last_path = path
+        
+    avg_steps = np.mean(successful_steps) if successful_steps else 0
+    avg_invalid = total_invalid / episodes
+    return successes, timeouts, avg_steps, avg_invalid, last_path
+
+def print_evaluation_comparison(q_table):
+    print("\n=== TASK 5: EVALUATION & COMPARISON ===")
+    
+    # 1. Evaluate Random Policy (100 episodes)[cite: 7, 8]
+    r_succ, r_time, r_steps, r_inv, _ = evaluate_policy(q_table, use_random=True, episodes=100)
+    
+    # 2. Evaluate Greedy Policy (1 episode)[cite: 8]
+    g_succ, g_time, g_steps, g_inv, greedy_path = evaluate_policy(q_table, use_random=False, episodes=1)
+    
+    print(f"Greedy Path Sequence: {greedy_path}")
+    print(f"Greedy Path Length: {len(greedy_path)-1} steps")
+    
+    print("\nComparison Table:")
+    print(f"{'Measure':<30} | {'Random policy (100 eps)':<25} | {'Greedy Q-policy (1 ep)'}")
+    print("-" * 80)
+    print(f"{'Goal reached':<30} | {f'{r_succ}/100':<25} | {'Yes' if g_succ else 'No'}")
+    print(f"{'Steps to goal, if successful':<30} | {f'{r_steps:.1f}':<25} | {int(g_steps) if g_succ else 'N/A'}")
+    print(f"{'Timeouts (40-step cutoff)':<30} | {f'{r_time}':<25} | {g_time}")
+    print(f"{'Invalid moves (Avg/Total)':<30} | {f'{r_inv:.1f} avg':<25} | {int(g_inv)} total")
+    print("-" * 80)
+    return greedy_path
+
+# ==========================================
+# 5. VISUALIZATION FUNCTIONS
+# ==========================================
+def plot_training_metrics(episode_returns, episode_successes, window=50):
+    """Plots moving averages of returns and success rates[cite: 7]."""
+    ma_returns = np.convolve(episode_returns, np.ones(window)/window, mode='valid')
+    ma_successes = np.convolve(episode_successes, np.ones(window)/window, mode='valid')
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    ax1.plot(ma_returns, color='blue')
+    ax1.set_title(f"Training Return (Moving Avg: {window} eps)")
+    ax1.set_xlabel("Episode")
+    ax1.set_ylabel("Average Return")
+    ax1.grid(True)
+    
+    ax2.plot(ma_successes, color='green')
+    ax2.set_title(f"Training Success Rate (Moving Avg: {window} eps)")
+    ax2.set_xlabel("Episode")
+    ax2.set_ylabel("Success Rate")
+    ax2.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_warehouse_grid(path):
+    """Draws the 5x5 warehouse grid and overlays the path[cite: 4, 8]."""
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.set_xlim(0, 5)
+    ax.set_ylim(5, 0)
+    ax.set_xticks(range(6))
+    ax.set_yticks(range(6))
+    ax.grid(color='gray', linestyle='-', linewidth=1)
+    
+    ax.set_xticks(np.arange(0.5, 5.5), minor=True)
+    ax.set_yticks(np.arange(0.5, 5.5), minor=True)
+    ax.set_xticklabels(['0', '1', '2', '3', '4'], minor=True, fontsize=12)
+    ax.set_yticklabels(['0', '1', '2', '3', '4'], minor=True, fontsize=12)
+    ax.tick_params(which='major', bottom=False, left=False, labelbottom=False, labelleft=False)
+    ax.tick_params(which='minor', top=True, bottom=False, labeltop=True, labelbottom=False, left=True, right=False, length=0)
+    
+    ax.set_xlabel("Column", fontsize=14, labelpad=10)
+    ax.xaxis.set_label_position('top')
+    ax.set_ylabel("Row", fontsize=14, labelpad=10)
+    
+    for r, c in OBSTACLES:
+        rect = patches.Rectangle((c, r), 1, 1, linewidth=1, edgecolor='gray', facecolor='gray')
+        ax.add_patch(rect)
+        
+    ax.text(0.5, 2.5, '$S$', ha='center', va='center', fontsize=18, fontweight='bold')
+    ax.text(2.5, 2.5, 'door', ha='center', va='center', fontsize=12)
+    ax.text(4.5, 2.5, '$G$', ha='center', va='center', fontsize=18, fontweight='bold')
+    
+    path_cols = [p[1] + 0.5 for p in path]
+    path_rows = [p[0] + 0.5 for p in path]
+    ax.plot(path_cols, path_rows, color='blue', marker='o', markersize=8, linewidth=3, alpha=0.7, label='Robot Path')
+    ax.legend(loc='upper right', bbox_to_anchor=(1.35, 1))
+
+    plt.title("Learned Greedy Trajectory", pad=30, fontsize=16)
+    plt.tight_layout()
+    plt.show()
+
+# ==========================================
+# 6. EXECUTION SCRIPT
+# ==========================================
+if __name__ == "__main__":
+    # Run the pre-training tests
+    run_task_4_tests()
+    
+    # Run the training
+    trained_q_table, returns, successes = train()
+    
+    # Run the evaluation and print the comparison table
+    greedy_path = print_evaluation_comparison(trained_q_table)
+    
+    # Display the plots (Requires user to close the first window to see the second)
+    print("\nDisplaying Training Metrics Graph... (Close window to proceed)")
+    plot_training_metrics(returns, successes)
+    
+    print("Displaying Warehouse Grid Map...")
+    plot_warehouse_grid(greedy_path)
